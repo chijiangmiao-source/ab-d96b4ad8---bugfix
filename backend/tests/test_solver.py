@@ -165,6 +165,68 @@ def test_range_across_tied_optima():
     assert dict(zip(ids(r2), vec(r2))) == {"s": 2, "t": 0, "u": 2, "v": 0}
 
 
+def test_high_fanout_stage1_outweighs_stage2():
+    # R --a-shared(cap 8)--> A --b00..b09(cap 16)--> ten leaves; every leaf
+    # requires the closed point 16. Moving the shared edge by 8 yields 11
+    # positive edges / total 88, while per-leaf +16 yields only 10 positive
+    # edges / total 160. The primary objective (positive-edge count) must win
+    # even though its total compensation is nearly twice as large.
+    leaves = [f"L{i:02d}" for i in range(10)]
+    nodes = ["R", "A"] + leaves
+    edges = [E("a-shared", "R", "A", 0, 8)]
+    edges += [E(f"b{i:02d}", "A", leaves[i], 0, 16) for i in range(10)]
+    windows = [W(n, 16, 16) for n in leaves]
+    r = solve(build_model(nodes, edges, windows))
+    assert r["status"] == "feasible"
+    assert r["objectives"]["positive_edges"] == 10
+    assert r["objectives"]["total_compensation"] == 160
+    v = dict(zip(ids(r), vec(r)))
+    assert v["a-shared"] == 0
+    for i in range(10):
+        assert v[f"b{i:02d}"] == 16
+    by_id = {row["id"]: row for row in r["edges"]}
+    # The stage-1/2 optimum is unique (closed-point windows, minimum edge
+    # count): every edge's co-optimal range is pinned to its chosen value.
+    assert (by_id["a-shared"]["min"], by_id["a-shared"]["max"]) == (0, 0)
+    for i in range(10):
+        row = by_id[f"b{i:02d}"]
+        assert (row["chosen"], row["min"], row["max"]) == (16, 16, 16)
+    arrivals = {x["node"]: x["arrival"] for x in r["leaves"]}
+    assert arrivals == {n: 16 for n in leaves}
+    tree = {x["node"]: x for x in r["tree"]["rows"]}
+    assert tree["A"]["arrival"] == 0 and tree["A"]["compensation"] == 0
+
+
+def test_lexicographic_arbitration_under_stage12_tie():
+    # R --a(cap4)--> A --b(cap3)--> B --d(cap2)--> L1
+    # R --c(cap1)--> L0
+    # L0 requires closed point 0; L1 requires [6, 7]. Both (a,b,d) = (4,0,2)
+    # and (3,3,0) give 2 positive edges with total 6; the lexicographically
+    # smallest vector by edge id is (a,b,c,d) = (3,3,0,0).
+    nodes = ["R", "A", "B", "L0", "L1"]
+    edges = [
+        E("a", "R", "A", 0, 4),
+        E("b", "A", "B", 0, 3),
+        E("d", "B", "L1", 0, 2),
+        E("c", "R", "L0", 0, 1),
+    ]
+    windows = [W("L0", 0, 0), W("L1", 6, 7)]
+    r = solve(build_model(nodes, edges, windows))
+    assert r["status"] == "feasible"
+    assert r["objectives"]["positive_edges"] == 2
+    assert r["objectives"]["total_compensation"] == 6
+    assert ids(r) == ["a", "b", "c", "d"]
+    assert vec(r) == [3, 3, 0, 0]
+    by_id = {row["id"]: row for row in r["edges"]}
+    assert (by_id["a"]["chosen"], by_id["a"]["min"], by_id["a"]["max"]) == (3, 3, 4)
+    assert (by_id["b"]["chosen"], by_id["b"]["min"], by_id["b"]["max"]) == (3, 0, 3)
+    assert (by_id["c"]["chosen"], by_id["c"]["min"], by_id["c"]["max"]) == (0, 0, 0)
+    assert (by_id["d"]["chosen"], by_id["d"]["min"], by_id["d"]["max"]) == (0, 0, 2)
+    arrivals = {x["node"]: x for x in r["leaves"]}
+    assert arrivals["L0"]["arrival"] == 0
+    assert arrivals["L1"]["arrival"] == 6
+
+
 # --------------------------------------------------------------------------- #
 # infeasibility / conflicts
 # --------------------------------------------------------------------------- #
@@ -334,6 +396,69 @@ def test_api_validation_422():
     r = client.post("/api/v1/solve", json=p)
     assert r.status_code == 422
     assert "detail" in r.json()
+
+
+def test_api_high_fanout_objective_hierarchy():
+    leaves = [f"L{i:02d}" for i in range(10)]
+    p = {
+        "nodes": ["R", "A"] + leaves,
+        "edges": (
+            [{"id": "a-shared", "source": "R", "target": "A", "delay": 0, "cap": 8}]
+            + [
+                {"id": f"b{i:02d}", "source": "A", "target": leaves[i],
+                 "delay": 0, "cap": 16}
+                for i in range(10)
+            ]
+        ),
+        "windows": [{"node": n, "lo": 16, "hi": 16} for n in leaves],
+    }
+    r = client.post("/api/v1/solve", json=p)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["objectives"]["positive_edges"] == 10
+    assert body["objectives"]["total_compensation"] == 160
+    v = dict(zip(body["objectives"]["vector_order"], body["objectives"]["vector"]))
+    assert v["a-shared"] == 0
+    assert all(v[f"b{i:02d}"] == 16 for i in range(10))
+    edges = {x["id"]: x for x in body["edges"]}
+    assert (edges["a-shared"]["min"], edges["a-shared"]["max"]) == (0, 0)
+    assert all(
+        (edges[f"b{i:02d}"]["min"], edges[f"b{i:02d}"]["max"]) == (16, 16)
+        for i in range(10)
+    )
+    assert {x["node"]: x["arrival"] for x in body["leaves"]} == {
+        n: 16 for n in leaves
+    }
+
+
+def test_api_lexicographic_arbitration_vector_and_ranges():
+    p = {
+        "nodes": ["R", "A", "B", "L0", "L1"],
+        "edges": [
+            {"id": "a", "source": "R", "target": "A", "delay": 0, "cap": 4},
+            {"id": "b", "source": "A", "target": "B", "delay": 0, "cap": 3},
+            {"id": "d", "source": "B", "target": "L1", "delay": 0, "cap": 2},
+            {"id": "c", "source": "R", "target": "L0", "delay": 0, "cap": 1},
+        ],
+        "windows": [
+            {"node": "L0", "lo": 0, "hi": 0},
+            {"node": "L1", "lo": 6, "hi": 7},
+        ],
+    }
+    r = client.post("/api/v1/solve", json=p)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["objectives"]["vector_order"] == ["a", "b", "c", "d"]
+    assert body["objectives"]["vector"] == [3, 3, 0, 0]
+    assert body["objectives"]["positive_edges"] == 2
+    assert body["objectives"]["total_compensation"] == 6
+    edges = {x["id"]: x for x in body["edges"]}
+    assert (edges["a"]["min"], edges["a"]["max"]) == (3, 4)
+    assert (edges["b"]["min"], edges["b"]["max"]) == (0, 3)
+    assert (edges["c"]["min"], edges["c"]["max"]) == (0, 0)
+    assert (edges["d"]["min"], edges["d"]["max"]) == (0, 2)
+    tree = {x["node"]: x for x in body["tree"]["rows"]}
+    assert tree["L1"]["arrival"] == 6 and tree["L0"]["arrival"] == 0
 
 
 def test_api_bad_type_422():

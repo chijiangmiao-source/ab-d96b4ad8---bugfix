@@ -167,6 +167,81 @@ async function main() {
   check("冲突面板列出 L2：要求 [8,8]、可达 [0,16]",
     l2?.includes("[8,8]") && l2?.includes("[0,16]"), l2);
 
+  // ---- E. high fanout: stage 1 beats stage 2 -----------------------------
+  console.log("E. 页面展示高扇出（正边数优先于总加量）");
+  await loadSampleAndSubmit(w, "高扇出正边优先");
+  await waitFor(
+    () => $(w, '[data-edge="a-shared"]') && $(w, '[data-chosen="b09"]'),
+    { label: "高扇出边表" }
+  );
+  const objText = $(w, '[data-testid="objectives"]')?.textContent.replace(/\s+/g, "");
+  check("目标摘要显示正向边数 10", objText?.includes("10"), objText);
+  check("目标摘要显示总加量 160", objText?.includes("160"), objText);
+  const fanVector = $(w, '[data-testid="vector"]')?.textContent.replace(/\s+/g, "");
+  check("加量向量 a-shared=0、十条叶边各 16",
+    fanVector?.startsWith("(a-shared,b00,b01") &&
+      fanVector?.includes(")=(0,16,16,16,16,16,16,16,16,16,16)"),
+    fanVector);
+  check("共享边采用 0、同优范围固定 0..0",
+    $(w, '[data-chosen="a-shared"]')?.textContent.trim() === "0" &&
+      $(w, '[data-min="a-shared"]')?.textContent.trim() === "0" &&
+      $(w, '[data-max="a-shared"]')?.textContent.trim() === "0");
+  let fanEdgesOk = true;
+  for (let i = 0; i < 10; i++) {
+    const id = `b${String(i).padStart(2, "0")}`;
+    const chosen = $(w, `[data-chosen="${id}"]`)?.textContent.trim();
+    const lo = $(w, `[data-min="${id}"]`)?.textContent.trim();
+    const hi = $(w, `[data-max="${id}"]`)?.textContent.trim();
+    if (chosen !== "16" || lo !== "16" || hi !== "16") fanEdgesOk = false;
+  }
+  check("十条叶边均采用 16 且同优范围固定 16..16", fanEdgesOk);
+  let fanArrivalsOk = true;
+  for (let i = 0; i < 10; i++) {
+    const n = `L${String(i).padStart(2, "0")}`;
+    if ($(w, `[data-arrival="${n}"]`)?.textContent.trim() !== "16") {
+      fanArrivalsOk = false;
+    }
+  }
+  check("树表十个叶端到达值均为 16", fanArrivalsOk);
+  check("树表 A 到达 0（共享边未加量）",
+    $(w, '[data-arrival="A"]')?.textContent.trim() === "0");
+
+  // ---- F. lexicographic arbitration among stage 1&2 ties -----------------
+  console.log("F. 页面展示同优字典序裁决");
+  await loadSampleAndSubmit(w, "同优字典序裁决");
+  await waitFor(
+    () => $(w, '[data-edge="d"]') && $(w, '[data-chosen="c"]'),
+    { label: "裁决边表" }
+  );
+  const lexObj = $(w, '[data-testid="objectives"]')?.textContent.replace(/\s+/g, "");
+  check("目标摘要正向边数 2、总加量 6",
+    lexObj?.includes("2") && lexObj?.includes("6"), lexObj);
+  const lexVector = $(w, '[data-testid="vector"]')?.textContent.replace(/\s+/g, "");
+  check("字典序向量 (a,b,c,d)=(3,3,0,0)",
+    lexVector?.includes("(a,b,c,d)=(3,3,0,0)"), lexVector);
+  const lexEdge = (id) => [
+    $(w, `[data-chosen="${id}"]`)?.textContent.trim(),
+    $(w, `[data-min="${id}"]`)?.textContent.trim(),
+    $(w, `[data-max="${id}"]`)?.textContent.trim(),
+  ];
+  check("a 采用 3、同优范围 3..4",
+    JSON.stringify(lexEdge("a")) === JSON.stringify(["3", "3", "4"]),
+    String(lexEdge("a")));
+  check("b 采用 3、同优范围 0..3",
+    JSON.stringify(lexEdge("b")) === JSON.stringify(["3", "0", "3"]),
+    String(lexEdge("b")));
+  check("c 采用 0、同优范围固定 0..0",
+    JSON.stringify(lexEdge("c")) === JSON.stringify(["0", "0", "0"]),
+    String(lexEdge("c")));
+  check("d 采用 0、同优范围 0..2",
+    JSON.stringify(lexEdge("d")) === JSON.stringify(["0", "0", "2"]),
+    String(lexEdge("d")));
+  check("树表 A=3、B=6、L0=0、L1=6",
+    $(w, '[data-arrival="A"]')?.textContent.trim() === "3" &&
+      $(w, '[data-arrival="B"]')?.textContent.trim() === "6" &&
+      $(w, '[data-arrival="L0"]')?.textContent.trim() === "0" &&
+      $(w, '[data-arrival="L1"]')?.textContent.trim() === "6");
+
   // ---- D. failed validation must preserve the input ---------------------
   console.log("D. 校验/请求失败后页面保留输入");
   const textarea = $(w, '[data-testid="batch-input"]');
