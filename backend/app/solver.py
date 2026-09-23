@@ -278,15 +278,15 @@ def _unit(m: int, i: int) -> np.ndarray:
     return v
 
 
-def _packed_hierarchy_cost(model: Model) -> np.ndarray:
-    m = len(model.edges)
+def _positive_count_cost(m: int) -> np.ndarray:
     cost = np.zeros(2 * m)
-    largest_cap = max((edge.cap for edge in model.edges), default=0)
-    primary_scale = 1.0 + 4.0 * largest_cap
-    cost[m:] = primary_scale
-    for rank, edge_index in enumerate(model.order):
-        tie_weight = np.ldexp(0.01, -rank)
-        cost[edge_index] = 1.0 + tie_weight
+    cost[m:] = 1.0
+    return cost
+
+
+def _total_cost(m: int) -> np.ndarray:
+    cost = np.zeros(2 * m)
+    cost[:m] = 1.0
     return cost
 
 
@@ -300,12 +300,39 @@ def solve(model: Model) -> dict:
     if not _is_feasible(model):
         return _infeasible_report(model)
 
-    res = _solve_milp(model, cost=_packed_hierarchy_cost(model))
+    # Stage 1: minimize the number of positive-compensation edges.
+    res = _solve_milp(model, cost=_positive_count_cost(m))
     if not res.success:  # pragma: no cover - guarded by feasibility call
-        raise SolverError("分级目标求解失败")
-    chosen = {i: int(round(res.x[i])) for i in range(m)}
+        raise SolverError("第一级目标（正边数）求解失败")
     p_star = sum(int(round(res.x[m + i])) for i in range(m))
-    t_star = sum(chosen.values())
+
+    # Stage 2: among stage-1 optima, minimize total compensation.
+    res = _solve_milp(model, cost=_total_cost(m), positive_count=p_star)
+    if not res.success:  # pragma: no cover
+        raise SolverError("第二级目标（总加量）求解失败")
+    t_star = sum(int(round(res.x[i])) for i in range(m))
+
+    # Stage 3: lexicographically smallest vector over edge-id order. Fix the
+    # already-decided prefix to its smallest jointly-feasible value one edge at
+    # a time; a weighted single objective cannot encode lexicographic order
+    # exactly (later coordinates would need weights beyond any finite bound).
+    chosen: dict[int, int] = {}
+    for edge_index in model.order:
+        if model.edges[edge_index].cap == 0:
+            chosen[edge_index] = 0
+            continue
+        r = _solve_milp(
+            model,
+            cost=_unit(m, edge_index),
+            positive_count=p_star,
+            total_comp=t_star,
+            fixed=chosen,
+        )
+        if not r.success:  # pragma: no cover
+            raise SolverError(
+                f"第三级字典序求解失败（边 {model.edges[edge_index].id}）"
+            )
+        chosen[edge_index] = int(round(r.x[edge_index]))
 
     # Ranges across ALL solutions optimal for stages 1 & 2.
     minima: dict[int, int] = {}

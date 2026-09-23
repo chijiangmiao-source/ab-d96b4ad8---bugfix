@@ -93,6 +93,12 @@ export default function App() {
             <button type="button" onClick={() => loadSample("windowConflict")}>
               叶端窗口冲突
             </button>
+            <button type="button" onClick={() => loadSample("highFanout")}>
+              高扇出叶边优先
+            </button>
+            <button type="button" onClick={() => loadSample("lexChain")}>
+              字典序规范裁决
+            </button>
           </div>
         </div>
         <textarea

@@ -154,6 +154,68 @@ async function main() {
     $(w, '[data-arrival="L1"]')?.textContent.trim() === "4" &&
       $(w, '[data-arrival="L2"]')?.textContent.trim() === "2");
 
+  // ---- E. high fan-out: leaf edges beat the cap-limited shared edge ------
+  console.log("E. 页面展示高扇出（十条叶边优先于共享边）");
+  await loadSampleAndSubmit(w, "高扇出叶边优先");
+  await waitFor(
+    () => $(w, '[data-edge="a-shared"]') && $(w, '[data-chosen="b09"]'),
+    { label: "高扇出边表" }
+  );
+  const objectivesText = $(w, '[data-testid="objectives"]')?.textContent ?? "";
+  check("目标摘要：正边数 10、总加量 160",
+    objectivesText.includes("10") && objectivesText.includes("160"),
+    objectivesText);
+  const hfVector = $(w, '[data-testid="vector"]')?.textContent.replace(/\s+/g, "");
+  check("加量向量：a-shared=0、b00..b09 各 16",
+    hfVector ===
+      "(a-shared,b00,b01,b02,b03,b04,b05,b06,b07,b08,b09)=" +
+      "(0,16,16,16,16,16,16,16,16,16,16)",
+    hfVector);
+  check("共享边采用 0、同优范围固定 0..0",
+    $(w, '[data-chosen="a-shared"]')?.textContent.trim() === "0" &&
+      $(w, '[data-min="a-shared"]')?.textContent.trim() === "0" &&
+      $(w, '[data-max="a-shared"]')?.textContent.trim() === "0");
+  check("十条叶边均采用 16、同优范围固定 16..16",
+    Array.from({ length: 10 }, (_, i) => `b${String(i).padStart(2, "0")}`)
+      .every((id) =>
+        $(w, `[data-chosen="${id}"]`)?.textContent.trim() === "16" &&
+        $(w, `[data-min="${id}"]`)?.textContent.trim() === "16" &&
+        $(w, `[data-max="${id}"]`)?.textContent.trim() === "16"));
+  check("树表十个叶端到达值均为 16、A 行采用加量 0",
+    Array.from({ length: 10 }, (_, i) => `L${String(i).padStart(2, "0")}`)
+      .every((n) => $(w, `[data-arrival="${n}"]`)?.textContent.trim() === "16") &&
+      $(w, 'tr[data-node="A"]')?.textContent.includes("0"));
+
+  // ---- F. lexicographic adjudication on a tied chain ---------------------
+  console.log("F. 页面展示前两级同优时的字典序规范裁决");
+  await loadSampleAndSubmit(w, "字典序规范裁决");
+  await waitFor(
+    () => $(w, '[data-edge="d"]') && $(w, '[data-arrival="L1"]'),
+    { label: "裁决边表" }
+  );
+  const fObj = $(w, '[data-testid="objectives"]')?.textContent ?? "";
+  check("目标摘要：正边数 2、总加量 6",
+    fObj.includes("2") && fObj.includes("6"), fObj);
+  const lxVector = $(w, '[data-testid="vector"]')?.textContent.replace(/\s+/g, "");
+  check("规范向量 (a,b,c,d)=(3,3,0,0)",
+    lxVector === "(a,b,c,d)=(3,3,0,0)", lxVector);
+  const range = (id) => [
+    $(w, `[data-chosen="${id}"]`)?.textContent.trim(),
+    $(w, `[data-min="${id}"]`)?.textContent.trim(),
+    $(w, `[data-max="${id}"]`)?.textContent.trim(),
+  ];
+  check("边表 a 采用 3、范围 3..4", JSON.stringify(range("a")) === JSON.stringify(["3", "3", "4"]),
+    JSON.stringify(range("a")));
+  check("边表 b 采用 3、范围 0..3", JSON.stringify(range("b")) === JSON.stringify(["3", "0", "3"]),
+    JSON.stringify(range("b")));
+  check("边表 c 采用 0、范围 0..0", JSON.stringify(range("c")) === JSON.stringify(["0", "0", "0"]),
+    JSON.stringify(range("c")));
+  check("边表 d 采用 0、范围 0..2", JSON.stringify(range("d")) === JSON.stringify(["0", "0", "2"]),
+    JSON.stringify(range("d")));
+  check("树表到达 L0=0、L1=6",
+    $(w, '[data-arrival="L0"]')?.textContent.trim() === "0" &&
+      $(w, '[data-arrival="L1"]')?.textContent.trim() === "6");
+
   // ---- C. leaf window conflict ------------------------------------------
   console.log("C. 页面展示叶端窗口冲突");
   await loadSampleAndSubmit(w, "叶端窗口冲突");

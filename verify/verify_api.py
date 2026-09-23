@@ -135,6 +135,88 @@ def scenario_conflict() -> None:
     check("附带人类可读冲突说明", bool(c["message"]))
 
 
+def scenario_high_fanout() -> None:
+    print("E. 高扇出：十条叶边优先于容量受限的共享边")
+    leaves = [f"L{i:02d}" for i in range(10)]
+    r = post({
+        "nodes": ["R", "A"] + leaves,
+        "edges": (
+            [{"id": "a-shared", "source": "R", "target": "A", "delay": 0, "cap": 8}]
+            + [
+                {"id": f"b{i:02d}", "source": "A", "target": f"L{i:02d}",
+                 "delay": 0, "cap": 16}
+                for i in range(10)
+            ]
+        ),
+        "windows": [{"node": n, "lo": 16, "hi": 16} for n in leaves],
+    })
+    check("status=feasible", r["status"] == "feasible",
+          (r.get("conflict") or {}).get("message", ""))
+    if r["status"] != "feasible":
+        return
+    check("第一级：正边数=10（共享边不计正边）",
+          r["objectives"]["positive_edges"] == 10,
+          str(r["objectives"]["positive_edges"]))
+    check("第二级：总加量=160",
+          r["objectives"]["total_compensation"] == 160,
+          str(r["objectives"]["total_compensation"]))
+    v = vec_by_id(r)
+    check("规范向量：a-shared=0，b00..b09 各 16",
+          v["a-shared"] == 0 and all(v[f"b{i:02d}"] == 16 for i in range(10)),
+          str(v))
+    e = {x["id"]: x for x in r["edges"]}
+    check("同优范围：共享边固定 0..0",
+          (e["a-shared"]["min"], e["a-shared"]["max"]) == (0, 0),
+          f"({e['a-shared']['min']},{e['a-shared']['max']})")
+    check("同优范围：每条叶边固定 16..16",
+          all((e[f"b{i:02d}"]["min"], e[f"b{i:02d}"]["max"]) == (16, 16)
+              for i in range(10)))
+    arrivals = {x["node"]: x["arrival"] for x in r["leaves"]}
+    check("十个叶端到达值均为闭点 16",
+          arrivals == {n: 16 for n in leaves}, str(arrivals))
+    tree = {x["node"]: x for x in r["tree"]["rows"]}
+    check("树表 A 行入边采用 0、L00/L09 到达 16",
+          tree["A"]["compensation"] == 0 and tree["L00"]["arrival"] == 16
+          and tree["L09"]["arrival"] == 16)
+
+
+def scenario_lex_chain() -> None:
+    print("F. 前两级同优时的字典序规范裁决（链式前缀）")
+    r = post({
+        "nodes": ["R", "A", "B", "L0", "L1"],
+        "edges": [
+            {"id": "a", "source": "R", "target": "A", "delay": 0, "cap": 4},
+            {"id": "b", "source": "A", "target": "B", "delay": 0, "cap": 3},
+            {"id": "d", "source": "B", "target": "L1", "delay": 0, "cap": 2},
+            {"id": "c", "source": "R", "target": "L0", "delay": 0, "cap": 1},
+        ],
+        "windows": [
+            {"node": "L0", "lo": 0, "hi": 0},
+            {"node": "L1", "lo": 6, "hi": 7},
+        ],
+    })
+    check("status=feasible", r["status"] == "feasible")
+    if r["status"] != "feasible":
+        return
+    check("第一级：正边数=2", r["objectives"]["positive_edges"] == 2)
+    check("第二级：总加量=6", r["objectives"]["total_compensation"] == 6)
+    check("向量按边标识 ASCII 排序 (a,b,c,d)",
+          r["objectives"]["vector_order"] == ["a", "b", "c", "d"])
+    check("规范向量 (3,3,0,0)（而非 (4,0,0,2)）",
+          r["objectives"]["vector"] == [3, 3, 0, 0],
+          str(r["objectives"]["vector"]))
+    e = {x["id"]: x for x in r["edges"]}
+    check("同优范围 a=3..4", (e["a"]["min"], e["a"]["max"]) == (3, 4),
+          f"({e['a']['min']},{e['a']['max']})")
+    check("同优范围 b=0..3", (e["b"]["min"], e["b"]["max"]) == (0, 3))
+    check("同优范围 c=0..0", (e["c"]["min"], e["c"]["max"]) == (0, 0))
+    check("同优范围 d=0..2", (e["d"]["min"], e["d"]["max"]) == (0, 2))
+    check("采用列与规范向量一致 a=3,b=3,c=0,d=0",
+          [e[k]["chosen"] for k in ("a", "b", "c", "d")] == [3, 3, 0, 0])
+    arrivals = {x["node"]: x["arrival"] for x in r["leaves"]}
+    check("叶端到达 L0=0、L1=6", arrivals == {"L0": 0, "L1": 6}, str(arrivals))
+
+
 def scenario_validation() -> None:
     print("D. 校验失败路径 (422)")
     bad = {
@@ -154,6 +236,8 @@ def main() -> int:
     scenario_shared()
     scenario_ranges()
     scenario_conflict()
+    scenario_high_fanout()
+    scenario_lex_chain()
     scenario_validation()
     print(f"\nAPI 核对: {len(FAILURES)} 项失败")
     return 1 if FAILURES else 0

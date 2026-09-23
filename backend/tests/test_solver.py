@@ -165,6 +165,69 @@ def test_range_across_tied_optima():
     assert dict(zip(ids(r2), vec(r2))) == {"s": 2, "t": 0, "u": 2, "v": 0}
 
 
+def test_high_fanout_leaf_edges_beat_cap_limited_shared_edge():
+    # Root R --a-shared(cap 8)--> A --b00..b09(cap 16)--> ten leaves, every
+    # leaf a closed point at 16. Using the shared edge covers at most 8 of the
+    # required 16 and forces ALL ten leaf edges positive on top: 11 positive
+    # edges / total 88. Keeping the shared edge at 0 and putting 16 on each
+    # leaf edge costs more total (160) but only 10 positive edges, so the
+    # primary objective must reject the shared edge despite its fan-out.
+    leaves = [f"L{i:02d}" for i in range(10)]
+    nodes = ["R", "A"] + leaves
+    edges = [E("a-shared", "R", "A", 0, 8)]
+    edges += [E(f"b{i:02d}", "A", f"L{i:02d}", 0, 16) for i in range(10)]
+    windows = [W(n, 16, 16) for n in leaves]
+    r = solve(build_model(nodes, edges, windows))
+    assert r["status"] == "feasible"
+    assert r["objectives"]["positive_edges"] == 10
+    assert r["objectives"]["total_compensation"] == 160
+    v = dict(zip(ids(r), vec(r)))
+    assert v["a-shared"] == 0
+    for i in range(10):
+        assert v[f"b{i:02d}"] == 16
+    # Every edge is pinned across all stage 1&2 optima.
+    by_id = {x["id"]: x for x in r["edges"]}
+    assert (by_id["a-shared"]["min"], by_id["a-shared"]["max"]) == (0, 0)
+    for i in range(10):
+        eid = f"b{i:02d}"
+        assert (by_id[eid]["min"], by_id[eid]["max"]) == (16, 16)
+    # Every leaf really arrives at the closed point 16.
+    assert {x["node"]: x["arrival"] for x in r["leaves"]} == {n: 16 for n in leaves}
+    tree = {x["node"]: x for x in r["tree"]["rows"]}
+    assert tree["A"]["compensation"] == 0
+    assert tree["L00"]["arrival"] == 16 and tree["L09"]["arrival"] == 16
+
+
+def test_lexicographic_tie_break_on_chain_prefix():
+    # Zero-delay tree R --a(cap4)--> A --b(cap3)--> B --d(cap2)--> L1, plus
+    # R --c(cap1)--> L0. L0 requires the closed point 0 (c pinned 0), L1
+    # requires [6,7]. Stage 1/2 optima need exactly 2 positive edges and total
+    # 6: (a,b) = (3,3) or (4,2) with d=0, or a=4,d=2 with b=0, etc. The
+    # lexicographically smallest vector in id order (a,b,c,d) is (3,3,0,0).
+    nodes = ["R", "A", "B", "L0", "L1"]
+    edges = [
+        E("a", "R", "A", 0, 4),
+        E("b", "A", "B", 0, 3),
+        E("d", "B", "L1", 0, 2),
+        E("c", "R", "L0", 0, 1),
+    ]
+    windows = [W("L0", 0, 0), W("L1", 6, 7)]
+    r = solve(build_model(nodes, edges, windows))
+    assert r["status"] == "feasible"
+    assert r["objectives"]["positive_edges"] == 2
+    assert r["objectives"]["total_compensation"] == 6
+    assert ids(r) == ["a", "b", "c", "d"]
+    assert vec(r) == [3, 3, 0, 0]
+    by_id = {x["id"]: x for x in r["edges"]}
+    # Co-optimal ranges across all stage 1&2 solutions:
+    assert (by_id["a"]["min"], by_id["a"]["max"]) == (3, 4)
+    assert (by_id["b"]["min"], by_id["b"]["max"]) == (0, 3)
+    assert (by_id["c"]["min"], by_id["c"]["max"]) == (0, 0)
+    assert (by_id["d"]["min"], by_id["d"]["max"]) == (0, 2)
+    arrivals = {x["node"]: x["arrival"] for x in r["leaves"]}
+    assert arrivals == {"L0": 0, "L1": 6}
+
+
 # --------------------------------------------------------------------------- #
 # infeasibility / conflicts
 # --------------------------------------------------------------------------- #
@@ -341,3 +404,64 @@ def test_api_bad_type_422():
     p["edges"][0]["cap"] = 99
     r = client.post("/api/v1/solve", json=p)
     assert r.status_code == 422
+
+
+def test_api_high_fanout_prefers_leaf_edges():
+    leaves = [f"L{i:02d}" for i in range(10)]
+    p = {
+        "nodes": ["R", "A"] + leaves,
+        "edges": (
+            [{"id": "a-shared", "source": "R", "target": "A", "delay": 0, "cap": 8}]
+            + [
+                {"id": f"b{i:02d}", "source": "A", "target": f"L{i:02d}",
+                 "delay": 0, "cap": 16}
+                for i in range(10)
+            ]
+        ),
+        "windows": [{"node": n, "lo": 16, "hi": 16} for n in leaves],
+    }
+    r = client.post("/api/v1/solve", json=p)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["objectives"]["positive_edges"] == 10
+    assert body["objectives"]["total_compensation"] == 160
+    v = dict(zip(body["objectives"]["vector_order"], body["objectives"]["vector"]))
+    assert v["a-shared"] == 0
+    assert all(v[f"b{i:02d}"] == 16 for i in range(10))
+    edges = {x["id"]: x for x in body["edges"]}
+    assert (edges["a-shared"]["min"], edges["a-shared"]["max"]) == (0, 0)
+    assert all(
+        (edges[f"b{i:02d}"]["min"], edges[f"b{i:02d}"]["max"]) == (16, 16)
+        for i in range(10)
+    )
+    assert all(x["arrival"] == 16 for x in body["leaves"])
+
+
+def test_api_lexicographic_tie_break_chain():
+    p = {
+        "nodes": ["R", "A", "B", "L0", "L1"],
+        "edges": [
+            {"id": "a", "source": "R", "target": "A", "delay": 0, "cap": 4},
+            {"id": "b", "source": "A", "target": "B", "delay": 0, "cap": 3},
+            {"id": "d", "source": "B", "target": "L1", "delay": 0, "cap": 2},
+            {"id": "c", "source": "R", "target": "L0", "delay": 0, "cap": 1},
+        ],
+        "windows": [
+            {"node": "L0", "lo": 0, "hi": 0},
+            {"node": "L1", "lo": 6, "hi": 7},
+        ],
+    }
+    r = client.post("/api/v1/solve", json=p)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["objectives"]["positive_edges"] == 2
+    assert body["objectives"]["total_compensation"] == 6
+    assert body["objectives"]["vector_order"] == ["a", "b", "c", "d"]
+    assert body["objectives"]["vector"] == [3, 3, 0, 0]
+    edges = {x["id"]: x for x in body["edges"]}
+    assert (edges["a"]["min"], edges["a"]["max"]) == (3, 4)
+    assert (edges["b"]["min"], edges["b"]["max"]) == (0, 3)
+    assert (edges["c"]["min"], edges["c"]["max"]) == (0, 0)
+    assert (edges["d"]["min"], edges["d"]["max"]) == (0, 2)
+    arrivals = {x["node"]: x["arrival"] for x in body["leaves"]}
+    assert arrivals == {"L0": 0, "L1": 6}

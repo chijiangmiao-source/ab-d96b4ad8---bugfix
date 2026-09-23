@@ -122,4 +122,51 @@ export const SAMPLES: Record<string, Batch> = {
       { node: "L2", lo: 8, hi: 8 },
     ],
   },
+  highFanout: {
+    // 高扇出：共享边 a-shared 上限仅 8，十条叶边上限 16，叶端均为闭点 16。
+    // 用共享边最多覆盖 8，反致 11 条正边；正解为共享边 0、叶边各 16（10 条）。
+    nodes: ["R", "A", "L00", "L01", "L02", "L03", "L04",
+      "L05", "L06", "L07", "L08", "L09"],
+    edges: [
+      { id: "a-shared", source: "R", target: "A", delay: 0, cap: 8 },
+      { id: "b00", source: "A", target: "L00", delay: 0, cap: 16 },
+      { id: "b01", source: "A", target: "L01", delay: 0, cap: 16 },
+      { id: "b02", source: "A", target: "L02", delay: 0, cap: 16 },
+      { id: "b03", source: "A", target: "L03", delay: 0, cap: 16 },
+      { id: "b04", source: "A", target: "L04", delay: 0, cap: 16 },
+      { id: "b05", source: "A", target: "L05", delay: 0, cap: 16 },
+      { id: "b06", source: "A", target: "L06", delay: 0, cap: 16 },
+      { id: "b07", source: "A", target: "L07", delay: 0, cap: 16 },
+      { id: "b08", source: "A", target: "L08", delay: 0, cap: 16 },
+      { id: "b09", source: "A", target: "L09", delay: 0, cap: 16 },
+    ],
+    windows: [
+      { node: "L00", lo: 16, hi: 16 },
+      { node: "L01", lo: 16, hi: 16 },
+      { node: "L02", lo: 16, hi: 16 },
+      { node: "L03", lo: 16, hi: 16 },
+      { node: "L04", lo: 16, hi: 16 },
+      { node: "L05", lo: 16, hi: 16 },
+      { node: "L06", lo: 16, hi: 16 },
+      { node: "L07", lo: 16, hi: 16 },
+      { node: "L08", lo: 16, hi: 16 },
+      { node: "L09", lo: 16, hi: 16 },
+    ],
+  },
+  lexChain: {
+    // 链式前缀裁决：R→A→B→L1（a,b,d，上限 4/3/2）与 R→L0（c，上限 1）。
+    // L0 要求闭点 0，L1 要求 [6,7]；前两级同优（2 条正边、总加量 6）下
+    // 按边标识顺序的字典序最小向量为 (a,b,c,d)=(3,3,0,0)。
+    nodes: ["R", "A", "B", "L0", "L1"],
+    edges: [
+      { id: "a", source: "R", target: "A", delay: 0, cap: 4 },
+      { id: "b", source: "A", target: "B", delay: 0, cap: 3 },
+      { id: "d", source: "B", target: "L1", delay: 0, cap: 2 },
+      { id: "c", source: "R", target: "L0", delay: 0, cap: 1 },
+    ],
+    windows: [
+      { node: "L0", lo: 0, hi: 0 },
+      { node: "L1", lo: 6, hi: 7 },
+    ],
+  },
 };
