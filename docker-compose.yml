@@ -1,0 +1,54 @@
+services:
+  api:
+    build:
+      context: ./backend
+    image: clocktree-audit-api:latest
+    environment:
+      # Internal port is fixed; the host-side published port is configurable.
+      - UVICORN_PORT=8000
+    ports:
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3); sys.exit(0 if json.load(r)['status']=='ok' else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        # Leave empty: the app calls same-origin URLs and nginx proxies /api.
+        VITE_API_BASE: ""
+    image: clocktree-audit-web:latest
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 3s
+
+  # One-shot verification: unit tests + frontend build + HTTP smoke +
+  # real-API scenarios + real-page scenarios. Reports via its exit code.
+  verify:
+    build:
+      context: .
+      dockerfile: verify/Dockerfile
+    image: clocktree-audit-verify:latest
+    environment:
+      - API_URL=http://api:8000
+      - WEB_URL=http://web:80
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    restart: "no"
